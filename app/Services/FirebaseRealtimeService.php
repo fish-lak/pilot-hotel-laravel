@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Reservation;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class FirebaseRealtimeService
 {
@@ -40,4 +41,4 @@ class FirebaseRealtimeService
                 ]);
         }
     }
-}
+} 
