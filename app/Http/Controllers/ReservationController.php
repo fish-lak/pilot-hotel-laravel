@@ -34,12 +34,15 @@ class ReservationController extends Controller
     {
         $data = $request->validate([
             'guest_name' => ['required', 'string', 'max:120'],
-            'guest_email' => ['required', 'email'],
-            'guest_phone' => ['required', 'regex:/^09\d{9}$/'],
+            'guest_email' => ['nullable', 'email'],
+            'guest_phone' => ['nullable', 'regex:/^09\d{9}$/'],
             'guest_country' => ['nullable', 'string', 'max:80'],
             'check_in' => ['required', 'date'],
             'check_out' => ['required', 'date', 'after:check_in'],
-            'room' => ['required', 'string', 'in:' . collect(RoomCatalog::roomOptions())->pluck('value')->implode(',')],
+            'rooms' => ['required', 'array', 'min:1', 'max:10'],
+            'rooms.*.type' => ['required', 'string', 'in:' . collect(RoomCatalog::all())->pluck('name')->implode(',')],
+            'rooms.*.number' => ['required', 'string'],
+            'room_count' => ['required', 'integer', 'min:1', 'max:10'],
             'adults' => ['required', 'integer', 'min:1'],
             'children' => ['nullable', 'integer', 'min:0'],
             'special_requests' => ['nullable', 'string'],
@@ -56,14 +59,32 @@ class ReservationController extends Controller
             'amount_paid.regex' => 'Payment amount must be a valid non-negative amount with up to two decimal places.',
         ]);
 
-        $data['guest_phone'] = $this->formatPhilippineMobile($data['guest_phone']);
-        $room = RoomCatalog::find($data['room']);
+        $data['guest_phone'] = $this->formatPhilippineMobile($data['guest_phone'] ?? null);
+        $roomDetails = $this->validateRoomSelections($data['rooms']);
+        if ($roomDetails['error']) {
+            return back()->withErrors(['rooms' => $roomDetails['error']])->withInput();
+        }
+        $roomDetails = $roomDetails['rooms'];
+        if (count($roomDetails) !== (int) $data['room_count']) {
+            return back()->withErrors(['room_count' => 'Select one room for each room count.'])->withInput();
+        }
+        $availableLabels = collect(RoomCatalog::withAvailability())->flatMap(fn (array $room) => collect($room['room_statuses'])->filter(fn (array $status) => $status['available'])->map(fn (array $status) => $room['name'] . ' - ' . $status['number']))->all();
+        if (array_diff(collect($roomDetails)->pluck('label')->all(), $availableLabels)) {
+            return back()->withErrors(['rooms' => 'One or more selected physical rooms are no longer available.'])->withInput();
+        }
+        $room = RoomCatalog::find($roomDetails[0]['label']);
         $guestCount = (int) $data['adults'] + (int) ($data['children'] ?? 0);
-        if ($room && $guestCount > $room['max_guests']) {
+        $capacity = collect($roomDetails)->sum(fn (array $detail) => RoomCatalog::find($detail['type'])['max_guests'] ?? 0);
+        if ($room && $guestCount > $capacity) {
             return back()->withErrors(['adults' => 'Number of guests exceeds the maximum capacity of this room.'])->withInput();
         }
-        $data['code'] = 'RES-' . (4820 + Reservation::count() + 1);
-        $data['amount'] = $this->calculateAmount($data['room'], $data['check_in'], $data['check_out']);
+        $codeNumber = 4820 + Reservation::count() + 1;
+        do {
+            $data['code'] = 'RES-' . $codeNumber++;
+        } while (Reservation::where('code', $data['code'])->exists());
+        $data['room'] = $roomDetails[0]['label'];
+        $data['room_details'] = $roomDetails;
+        $data['amount'] = $this->calculateRoomsAmount($roomDetails, $data['check_in'], $data['check_out']);
         $data['booking_type'] = $data['booking_type'];
         $data['status'] = $data['booking_type'] === 'check_in_now' ? 'Checked-In' : 'Confirmed';
         $data['amount_paid'] = (float) ($data['amount_paid'] ?? 0);
@@ -99,11 +120,13 @@ class ReservationController extends Controller
         $data = $request->validate([
             'guest_name' => ['required', 'string', 'max:120'],
             'room' => ['required', 'string', 'in:' . collect(RoomCatalog::roomOptions())->pluck('value')->implode(',')],
+            'room_count' => ['nullable', 'integer', 'min:1', 'max:10'],
             'check_in' => ['required', 'date'],
             'check_out' => ['required', 'date', 'after_or_equal:check_in'],
             'status' => ['required', Rule::in(['Pending', 'Confirmed', 'Checked-In', 'Cancelled', 'No-Show'])],
         ]);
-        $data['amount'] = $this->calculateAmount($data['room'], $data['check_in'], $data['check_out']);
+        $data['room_count'] = (int) ($data['room_count'] ?? $reservation->room_count ?? 1);
+        $data['amount'] = $this->calculateAmount($data['room'], $data['room_count'], $data['check_in'], $data['check_out']);
         if ($data['status'] === 'Checked-In' && !$reservation->checked_in_at) {
             $data['checked_in_at'] = now();
         }
@@ -196,15 +219,42 @@ class ReservationController extends Controller
         return to_route('reservations.index')->with('success', 'No-Show policy updated.');
     }
 
-    private function calculateAmount(string $room, string $checkIn, string $checkOut): int
+    private function calculateAmount(string $room, int $roomCount, string $checkIn, string $checkOut): int
     {
         $nightlyRate = RoomCatalog::find($room)['rate_min'] ?? 0;
         $nights = max(Carbon::parse($checkIn)->diffInDays(Carbon::parse($checkOut)), 1);
 
-        return $nightlyRate * $nights;
+        return $nightlyRate * $nights * $roomCount;
     }
 
-    private function formatPhilippineMobile(string $phone): string
+    private function calculateRoomsAmount(array $rooms, string $checkIn, string $checkOut): int
+    {
+        $nights = max(Carbon::parse($checkIn)->diffInDays(Carbon::parse($checkOut)), 1);
+
+        return collect($rooms)->sum('rate') * $nights;
+    }
+
+    private function validateRoomSelections(array $selections): array
+    {
+        $details = [];
+        $labels = [];
+        foreach ($selections as $selection) {
+            $room = RoomCatalog::find($selection['type']);
+            if (!$room || !in_array($selection['number'], $room['room_numbers'], true)) {
+                return ['rooms' => [], 'error' => 'Each room number must belong to its selected room type.'];
+            }
+            $label = $room['name'] . ' - ' . $selection['number'];
+            if (in_array($label, $labels, true)) {
+                return ['rooms' => [], 'error' => 'The same physical room cannot be selected twice.'];
+            }
+            $labels[] = $label;
+            $details[] = ['type' => $room['name'], 'number' => $selection['number'], 'label' => $label, 'rate' => (float) ($room['rate_min'] ?? 0)];
+        }
+
+        return ['rooms' => $details, 'error' => null];
+    }
+
+    private function formatPhilippineMobile(?string $phone): ?string
     {
         return $phone;
     }

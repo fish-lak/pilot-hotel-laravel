@@ -18,7 +18,7 @@ class Reservation extends Model
     public const ACTIVE_STATUSES = ['Pending', 'Confirmed', 'Checked-In'];
 
     protected $fillable = [
-        'code', 'guest_name', 'guest_email', 'guest_phone', 'guest_country', 'room', 'check_in', 'check_out',
+        'code', 'guest_name', 'guest_email', 'guest_phone', 'guest_country', 'room', 'room_count', 'room_details', 'check_in', 'check_out',
         'status', 'booking_type', 'amount', 'payment_status', 'additional_charges', 'discount', 'amount_paid',
         'remaining_balance',
         'payment_method', 'booking_source', 'staff_name', 'adults', 'children', 'special_requests',
@@ -32,6 +32,8 @@ class Reservation extends Model
         return [
             'check_in' => 'date',
             'check_out' => 'date',
+            'room_count' => 'integer',
+            'room_details' => 'array',
             'amount' => 'decimal:2',
             'additional_charges' => 'decimal:2',
             'discount' => 'decimal:2',

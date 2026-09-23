@@ -80,6 +80,20 @@ class RoomCatalog
                 'room_numbers' => ['Cabin 3', 'Cabin 4', 'Cabin 10'],
                 'units' => 3,
             ],
+            [
+                'slug' => 'ambassador-room',
+                'name' => 'Ambassador Room',
+                'image' => 'images/rooms/standard-room.jpg',
+                'rate_min' => 10000,
+                'rate_max' => 10000,
+                'capacity' => '4 pax',
+                'max_guests' => 4,
+                'description' => 'Complete amenities with kitchen and a bathtub shower room',
+                'amenities' => ['Complete amenities', 'Queen bed', '2 single beds', 'Kitchen', 'Bathtub shower room'],
+                'locations' => 'Room 210',
+                'room_numbers' => ['Room 210'],
+                'units' => 1,
+            ],
         ];
     }
 
@@ -90,11 +104,14 @@ class RoomCatalog
 
     public static function roomOptions(): array
     {
-        return collect(self::all())->flatMap(fn (array $room) => collect($room['room_numbers'])->map(fn (string $number) => [
-            'value' => $room['name'] . ' - ' . $number,
-            'room' => $number,
-            'type' => $room['name'],
-        ]))->all();
+        return collect(self::all())->flatMap(fn (array $room) => [
+            ['value' => $room['name'], 'room' => $room['name'], 'type' => $room['name']],
+            ...collect($room['room_numbers'])->map(fn (string $number) => [
+                'value' => $room['name'] . ' - ' . $number,
+                'room' => $number,
+                'type' => $room['name'],
+            ])->all(),
+        ])->all();
     }
 
     public static function withAvailability(): array
@@ -102,14 +119,20 @@ class RoomCatalog
         app(NoShowService::class)->markExpired();
         $booked = Reservation::query()
             ->whereIn('status', Reservation::ACTIVE_STATUSES)
-            ->get(['room']);
+            ->get(['room', 'room_details']);
 
         return collect(self::all())->map(function (array $room) use ($booked) {
-            $typeBookings = $booked->filter(fn (Reservation $reservation) => $reservation->room === $room['name'])->count();
-            $room['room_statuses'] = collect($room['room_numbers'])->map(function (string $number, int $index) use ($booked, $room, $typeBookings) {
+            $legacyTypeBookings = $booked->filter(fn (Reservation $reservation) => $reservation->room === $room['name'] && empty($reservation->room_details))
+                ->sum(fn (Reservation $reservation) => max((int) ($reservation->room_count ?? 1), 1));
+            $legacyAvailableIndex = 0;
+            $room['room_statuses'] = collect($room['room_numbers'])->map(function (string $number) use ($booked, $room, $legacyTypeBookings, &$legacyAvailableIndex) {
                 $label = $room['name'] . ' - ' . $number;
-                $bookedDirectly = $booked->contains(fn (Reservation $reservation) => $reservation->room === $label);
-                return ['number' => $number, 'available' => !$bookedDirectly && $index >= $typeBookings];
+                $bookedDirectly = $booked->contains(function (Reservation $reservation) use ($label) {
+                    $details = $reservation->room_details ?? [];
+                    return $reservation->room === $label || collect($details)->contains(fn (array $detail) => ($detail['label'] ?? null) === $label);
+                });
+                $legacyBooked = !$bookedDirectly && $legacyAvailableIndex++ < $legacyTypeBookings;
+                return ['number' => $number, 'available' => !$bookedDirectly && !$legacyBooked];
             })->all();
             $room['available_units'] = collect($room['room_statuses'])->where('available', true)->count();
             return $room;
