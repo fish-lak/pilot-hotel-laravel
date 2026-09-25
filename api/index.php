@@ -8,5 +8,6 @@ require __DIR__ . '/../vendor/autoload.php';
 $app = require_once __DIR__ . '/../bootstrap/app.php';
 
 $app->bind('path.public', fn () => __DIR__ . '/../public');
+$app->useStoragePath('/tmp/storage');
 
 $app->handleRequest(Request::capture());
