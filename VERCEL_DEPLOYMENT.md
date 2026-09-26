@@ -65,10 +65,11 @@ For the current project, a direct Laravel deployment to Vercel is not recommende
 ## Production checklist before real deployment
 
 - switch from SQLite to MySQL or PostgreSQL
+- set `SESSION_DRIVER` to `cookie` or `database` in Vercel Project Settings > Environment Variables
+- set `DB_CONNECTION`, `DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, and `DB_PASSWORD` in Vercel Project Settings to credentials for the same external database; do not put credentials in `vercel.json`
 - set `APP_ENV=production`
 - set `APP_DEBUG=false`
 - set `APP_URL=https://your-domain.com`
-- set database credentials for runtime
 - set Firebase credentials
 - run migrations on the production database
 - configure a scheduler and queue worker on the hosting platform
